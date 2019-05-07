@@ -6,8 +6,12 @@ import subprocess
 
 ###This is the register with website code"""
 def load_meta_data():
-    with open("web/scb/metaddata.dat") as op:
-        return pickle.load(op)
+    try:
+        with open("web/scb/metaddata.dat") as op:
+            return pickle.load(op)
+    except OSError:
+        raise ValueError("web/scb/metadata.dat not found - make sure your run script calls mbf_publish.scb.prep_scb()")
+
 
 
 
@@ -76,9 +80,11 @@ accepted_servers = {
         'scb_dev': 'http://mbf.imt.uni-marburg.de/scb_dev',
         'localhost': 'http://localhost:8080/scb',
         }
-def print_usage():
+def print_usage(msg=''):
     print("Usage:")
     print('scb_submit.py')
+    if msg:
+        print(msg)
     sys.exit()
 
 def get_current_repo_revision():
@@ -87,13 +93,11 @@ def get_current_repo_revision():
     return x[:x.find(":")]
 
 def main():
-    path = os.path.abspath(os.getcwd())
-    components = path.split("/")
-    ok = components[-2] == 'e' and components[-3] == 'imt'
-    ok |= components[-2] == 'e' and components[-3] == 'ffs'
-    if not ok:
-        raise ValueError("This must be run in a server/imt/e  or ffs/e folder")
-    project_name = components[-1]
+    try:
+        path = os.environ['ANYSNAKE_PROJECT_PATH']
+        project_name = path.split('/')[-1]
+    except KeyError:
+        print_usage("Must be run from inside anysnake")
     print("submitting %s to scb..." % project_name)
     print('now rsyncing')
     _write_scb_rsync_file()
