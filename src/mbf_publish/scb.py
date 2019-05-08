@@ -12,7 +12,7 @@ def prep_scb(*objects_to_push):
     for x in objects_to_push:
         if isinstance(x, dict):
             objs.extend(x.values())
-        elif hasattr(x, '__iter__'):
+        elif hasattr(x, "__iter__"):
             objs.extend(iter(x))
         else:
             print(x)
@@ -24,7 +24,7 @@ def prep_scb(*objects_to_push):
 
 class SCBSubmission:
     def __init__(self, objs):
-        self.output_path = Path('web/scb')
+        self.output_path = Path("web/scb")
         self.output_path.mkdir(exist_ok=True, parents=True)
         self.objs = objs
         self.used = set()
@@ -32,13 +32,24 @@ class SCBSubmission:
         self.meta_data = {}
         self.deps = []
         self.errors = []
+        self.vids = []
         self.extract_genomes()
         self.extract_lanes()
+        self.extract_genomic_regions()
         if len(self.used) != len(self.objs):
             missing = set(self.objs) - self.used
             raise ValueError("unused objects", missing)
         if self.errors:
             raise ValueError(self.errors)
+        self.deps.append(ppg.ParameterInvariant('SCBSubmission_vids', 
+                                                str(self.vids)))
+
+        self.deps.append(ppg.FunctionInvariant('SCBSubmission.extract_genomes',
+                                               self.__class__.extract_genomes))
+        self.deps.append(ppg.FunctionInvariant('SCBSubmission.extract_lanes',
+                                               self.__class__.extract_lanes))
+        self.deps.append(ppg.FunctionInvariant('SCBSubmission.extract_genomic_regions',
+                                               self.__class__.extract_genomic_regions))
 
     def extract_genomes(self):
         for o in self.objs:
@@ -53,10 +64,10 @@ class SCBSubmission:
         output_filename = "web/scb/metadata.json"
 
         def descend_and_replace_callbacks(d):
-            print('descend_and_replace_callbacks')
-            for k,v in d.items():
-                if hasattr(v, '__call__'):
-                    print('bingo')
+            print("descend_and_replace_callbacks")
+            for k, v in d.items():
+                if hasattr(v, "__call__"):
+                    print("bingo")
                     d[k] = v()
                 elif isinstance(v, dict):
                     descend_and_replace_callbacks(v)
@@ -68,39 +79,48 @@ class SCBSubmission:
         def dump(output_filename):
             descend_and_replace_callbacks(self.meta_data)
             with open(output_filename, "w") as op:
-                json.dump(self.meta_data, op, indent=4)  # make sure it's sane, no funny objects
+                json.dump(
+                    self.meta_data, op, indent=4
+                )  # make sure it's sane, no funny objects
 
         return ppg.FileGeneratingJob(output_filename, dump).depends_on(self.deps)
 
     def dump_rsync_list(self):
-        output_filename = 'web/scb/rsync_list.txt'
+        output_filename = "web/scb/rsync_list.txt"
+
         def dump(output_filename):
             paths_to_copy = set()
             for group in self.meta_data:
                 for entry in self.meta_data[group]:
-                    for x in ['table_path', 'path_bigbed', 'path_table', 'path_bam', 'path']:
+                    for x in [
+                        "table_path",
+                        "path_bigbed",
+                        "path_table",
+                        "path_bam",
+                        "path",
+                    ]:
                         if x in entry:  # genes
                             paths_to_copy.add(Path(entry[x]).absolute())
-                    if 'path_bam' in entry:
-                            paths_to_copy.add(Path(entry['path_bam'] + '.bai').absolute())
-            for fn in Path('web/scb').glob("*"):
+                    if "path_bam" in entry:
+                        paths_to_copy.add(Path(entry["path_bam"] + ".bai").absolute())
+            for fn in Path("web/scb").glob("*"):
                 paths_to_copy.add(fn.absolute())
-            output = ''
-            paths_to_copy.add("/project/web/scb/metadata.json")
+            output = ""
+            # paths_to_copy.add("/project/web/scb/metadata.json")
             for x in sorted([str(x) for x in paths_to_copy]):
-                if x.startswith('/project'):
-                    output += x[len('/project/'):]
+                if x.startswith("/project"):
+                    output += x[len("/project/") :]
                     output += "\n"
             Path(output_filename).write_text(output)
 
-
-        return ppg.FileGeneratingJob(output_filename, dump).depends_on(self.deps)
+        return ppg.FileGeneratingJob(output_filename, dump).depends_on(self.deps).depends_on(self.dump_meta_data_json())
 
     def extract_lanes(self):
         self.meta_data["lanes"] = []
         for entry in self.objs:
             if hasattr(entry, "get_bam_names"):
                 vids = flatten_vid(entry.vid, entry, self.errors)
+                self.vids.append(vids)
                 fn = entry.get_bam_names()[0]
                 md5 = get_md5(fn, entry.load())
                 self.meta_data["lanes"].append(
@@ -108,7 +128,7 @@ class SCBSubmission:
                         "vids": vids,
                         "path_bam": fn,
                         "displayname": get_scb_name(entry),
-                        "md5": lambda: Path(md5[1]).read_text(),
+                        "md5": lambda md5=md5: Path(md5[1]).read_text(),
                         "md5_path": fn,
                         "scb_comment": (
                             entry.scb_comment if hasattr(entry, "scb_comment") else ""
@@ -116,15 +136,46 @@ class SCBSubmission:
                         "id": (
                             entry.scb_id if hasattr(entry, "scb_id") else None
                         ),  # this allows you to permanently tie it to an entry in SCBs databases
-                        #"browser_options": entry.gbrowse_options,
-                        #"has_splicing": entry.has_spliced_reads,
+                        # "browser_options": entry.gbrowse_options,
+                        # "has_splicing": entry.has_spliced_reads,
                         "genome_label": extract_genome_label(entry),
                     }
                 )
                 self.deps.append(md5[0])
                 self.register_used(entry)
 
-
+    def extract_genomic_regions(self):
+        self.meta_data["genomic_regions"] = []
+        for entry in self.objs:
+            if entry.__class__.__name__ == "GenomicRegions":
+                vids = flatten_vid(entry.vid, entry, self.errors)
+                self.vids.append(vids)
+                job_bigbed, fn_bigbed = entry.write_bigbed()
+                job_table, fn_table = entry.write()
+                md5 = get_md5(fn_bigbed, job_bigbed)
+                self.meta_data["genomic_regions"].append(
+                    {
+                        "vids": vids,
+                        "path_bigbed": str(fn_bigbed.absolute().relative_to('/project')),
+                        "path_table": str(fn_table.absolute().relative_to('/project')),
+                        "displayname": get_scb_name(entry),
+                        "md5": lambda md5=md5: Path(md5[1]).read_text(),
+                        "md5_path": str(fn_bigbed.absolute().relative_to('/project')),  # this is a bit more robust than taking the table path, since it does not change just because columns were added
+                        "scb_comment": entry.scb_comment
+                        if hasattr(entry, "scb_comment")
+                        else "",
+                        "id": entry.scb_id
+                        if hasattr(entry, "scb_id")
+                        else None,  # this allows you to permanently tie it to an entry in SCBs databases
+                        "size": lambda: len(entry.df),
+                        "genome_label": extract_genome_label(entry),
+                    }
+                )
+                self.deps.append(entry.load)
+                self.deps.append(job_bigbed)
+                self.deps.append(job_table)
+                self.deps.append(md5[0])
+                self.register_used(entry)
 
     def register_used(self, entry):
         if entry in self.used:
@@ -149,7 +200,7 @@ def get_md5(input_name, input_job):
 def flatten_vid(vid, entry, errors, collector=None):
     if collector is None:
         collector = []
-    if vid is None:
+    if vid is None or vid == []:
         errors.append(
             (
                 entry.name if hasattr(entry, "name") else entry.column_name,

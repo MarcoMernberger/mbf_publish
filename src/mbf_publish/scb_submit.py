@@ -8,7 +8,7 @@ import json
 ###This is the register with website code"""
 def load_meta_data():
     try:
-        with open("web/scb/metaddata.json") as op:
+        with open("web/scb/metadata.json") as op:
             return json.load(op)
     except OSError:
         raise ValueError(
@@ -90,6 +90,7 @@ def main():
         print_usage("Must be run from inside anysnake")
     print("submitting %s to scb..." % project_name)
     print("now rsyncing")
+    print("sudo password is test123 in anysnake container!")
     _rsync_to_server(project_name)
 
     print("calling webserver")
