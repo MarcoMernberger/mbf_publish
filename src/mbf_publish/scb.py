@@ -76,10 +76,8 @@ class SCBSubmission:
         output_filename = "web/scb/metadata.json"
 
         def descend_and_replace_callbacks(d):
-            print("descend_and_replace_callbacks")
             for k, v in d.items():
                 if hasattr(v, "__call__"):
-                    print("bingo")
                     d[k] = v()
                 elif isinstance(v, dict):
                     descend_and_replace_callbacks(v)
@@ -245,6 +243,7 @@ class SCBSubmission:
                     }
                 )
                 self.deps.append(entry.load())
+                self.deps.append(self.get_genes(entry.genome).load())
                 self.deps.append(job_table)
                 self.register_used(entry)
 
