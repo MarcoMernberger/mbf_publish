@@ -1,8 +1,13 @@
 from pathlib import Path
+import bitarray
+import struct
+import numpy as np
+import pandas as pd
 import pypipegraph as ppg
 from mbf_externals.util import write_md5_sum
 import pickle
 import json
+import hashlib
 
 
 def prep_scb(*objects_to_push):
@@ -33,28 +38,35 @@ class SCBSubmission:
         self.deps = []
         self.errors = []
         self.vids = []
+
+        self.genes_to_dump = {}
         self.extract_genomes()
         self.extract_lanes()
         self.extract_genomic_regions()
+        self.extract_genes()
         if len(self.used) != len(self.objs):
             missing = set(self.objs) - self.used
             raise ValueError("unused objects", missing)
         if self.errors:
             raise ValueError(self.errors)
-        self.deps.append(ppg.ParameterInvariant('SCBSubmission_vids', 
-                                                str(self.vids)))
+        self.deps.append(ppg.ParameterInvariant("SCBSubmission_vids", str(self.vids)))
 
-        self.deps.append(ppg.FunctionInvariant('SCBSubmission.extract_genomes',
-                                               self.__class__.extract_genomes))
-        self.deps.append(ppg.FunctionInvariant('SCBSubmission.extract_lanes',
-                                               self.__class__.extract_lanes))
-        self.deps.append(ppg.FunctionInvariant('SCBSubmission.extract_genomic_regions',
-                                               self.__class__.extract_genomic_regions))
-
-    def extract_genomes(self):
-        for o in self.objs:
-            if hasattr(o, "genome"):
-                self.genomes.add(o)
+        self.deps.append(
+            ppg.FunctionInvariant(
+                "SCBSubmission.extract_genomes", self.__class__.extract_genomes
+            )
+        )
+        self.deps.append(
+            ppg.FunctionInvariant(
+                "SCBSubmission.extract_lanes", self.__class__.extract_lanes
+            )
+        )
+        self.deps.append(
+            ppg.FunctionInvariant(
+                "SCBSubmission.extract_genomic_regions",
+                self.__class__.extract_genomic_regions,
+            )
+        )
 
     def dump_meta_data(self):
         self.dump_meta_data_json()
@@ -113,7 +125,16 @@ class SCBSubmission:
                     output += "\n"
             Path(output_filename).write_text(output)
 
-        return ppg.FileGeneratingJob(output_filename, dump).depends_on(self.deps).depends_on(self.dump_meta_data_json())
+        return (
+            ppg.FileGeneratingJob(output_filename, dump)
+            .depends_on(self.deps)
+            .depends_on(self.dump_meta_data_json())
+        )
+
+    def extract_genomes(self):
+        for o in self.objs:
+            if hasattr(o, "genome"):
+                self.genomes.add(o)
 
     def extract_lanes(self):
         self.meta_data["lanes"] = []
@@ -156,11 +177,15 @@ class SCBSubmission:
                 self.meta_data["genomic_regions"].append(
                     {
                         "vids": vids,
-                        "path_bigbed": str(fn_bigbed.absolute().relative_to('/project')),
-                        "path_table": str(fn_table.absolute().relative_to('/project')),
+                        "path_bigbed": str(
+                            fn_bigbed.absolute().relative_to("/project")
+                        ),
+                        "path_table": str(fn_table.absolute().relative_to("/project")),
                         "displayname": get_scb_name(entry),
                         "md5": lambda md5=md5: Path(md5[1]).read_text(),
-                        "md5_path": str(fn_bigbed.absolute().relative_to('/project')),  # this is a bit more robust than taking the table path, since it does not change just because columns were added
+                        "md5_path": str(
+                            fn_bigbed.absolute().relative_to("/project")
+                        ),  # this is a bit more robust than taking the table path, since it does not change just because columns were added
                         "scb_comment": entry.scb_comment
                         if hasattr(entry, "scb_comment")
                         else "",
@@ -177,10 +202,259 @@ class SCBSubmission:
                 self.deps.append(md5[0])
                 self.register_used(entry)
 
+    def extract_genes(self):
+        self.meta_data["genes"] = []
+        for entry in self.objs:
+            if entry.__class__.__name__ == "Genes":
+                if not entry.genome in self.genes_to_dump:
+                    self.genes_to_dump[entry.genome] = []
+                self.genes_to_dump[entry.genome].append(entry)
+                vids = flatten_vid(entry.vid, entry, self.errors)
+
+                def calc_md5():
+                    entry_vector = np.zeros(
+                        (len(self.get_genes(entry.genome).df)), dtype=bool
+                    )
+                    for kept in entry.df["parent_row"]:
+                        entry_vector[kept] = 1
+                    md5_value = hashlib.md5(
+                        ("".join(["1" if x else "0" for x in entry_vector])).encode(
+                            "utf-8"
+                        )
+                    ).hexdigest()
+                    return md5_value
+
+                scb_comment = getattr(entry, "scb_comment", "")
+                if scb_comment is None:
+                    scb_comment = ""
+                job_table = self.write_gene_sql(entry.genome)
+                fn_table = Path(job_table.filenames[0])
+
+                self.meta_data["genes"].append(
+                    {
+                        "vids": vids,
+                        "displayname": get_scb_name(entry),
+                        "dbname": entry.name,
+                        "md5": calc_md5,
+                        "scb_comment": scb_comment,
+                        "id": entry.scb_id
+                        if hasattr(entry, "scb_id")
+                        else None,  # this allows you to permanently tie it to an entry in SCBs databases
+                        "table_path": str(fn_table.absolute().relative_to("/project")),
+                        "genome_label": extract_genome_label(entry),
+                    }
+                )
+                self.deps.append(entry.load())
+                self.deps.append(job_table)
+                self.register_used(entry)
+
     def register_used(self, entry):
         if entry in self.used:
             raise ValueError("double use", entry)
         self.used.add(entry)
+
+    def get_genes(self, genome):
+        import mbf_genomics
+
+        return mbf_genomics.genes.Genes(genome)
+
+    def write_gene_sql(self, genome):
+        import sqlite3
+
+        genes = self.get_genes(genome)
+
+        output_filename = Path("web", "scb", "genes", genes.name + ".sqlite_split_df")
+        output_filename.parent.mkdir(exist_ok=True, parents=True)
+
+        def chunks(l, n):
+            n = max(1, n)
+            return [l[i : i + n] for i in range(0, len(l), n)]
+
+        def write(output_filename):
+            # column_properties = self.get_column_properties()
+            df = genes.df  # in the order defined by priority
+
+            for col in df.columns:
+                if df[col].dtype == "object" or col in ["chr", "biotype"]:
+                    print("fixing", col)
+                    df = df.assign(**{col: [str(x) for x in df[col].values]})
+            df = df.rename(columns={'gene_stable_id': 'stable_id'})
+            print(df.columns)
+
+            index_columns = ["stable_id"]
+            output = {}
+            index_arg = {}
+            column_to_df_no = {c: 0 for c in index_columns}
+            for ii, columns in enumerate(chunks(list(df.columns), 990)):
+                for idx_column in index_columns:
+                    if idx_column not in columns:
+                        columns.append(idx_column)
+                sub_df = df[columns]
+                output["df_%i" % ii] = sub_df
+                index_arg["df_%i" % ii] = index_columns
+                for c in columns:
+                    if c not in index_columns:
+                        column_to_df_no[c] = ii
+            if Path(output_filename).exists():
+                print('unlinking', output_filename)
+                Path(output_filename).unlink()
+            with sqlite3.connect(output_filename, isolation_level="DEFERRED") as conn:
+                cur = conn.cursor()
+                cur.execute("BEGIN TRANSACTION")
+                for table_name, sub_df in output.items():
+                    print(sub_df.dtypes)
+                    sub_df.to_sql(table_name, conn)
+                    statement = (
+                        "CREATE TABLE '%s' (column_name TEXT, column_type TEXT)"
+                        % (table_name + "_meta",)
+                    )
+                    cur.execute(statement)
+                    meta = []
+                    for column_name, column_type in sub_df.dtypes.iteritems():
+                        meta.append((column_name, str(column_type)))
+                    cur.executemany(
+                        "INSERT into '%s_meta' VALUES (?, ?)" % (table_name,), meta
+                    )
+                    indexed_columns = index_arg[table_name]
+                    if indexed_columns:  # index columns are in every table
+                        for column_name in indexed_columns:
+                            # if column_properties[column_name].get("nocase", False):
+                            index_options = "collate nocase"
+                            # else:
+                            #    index_options = ""
+                            cur.execute(
+                                "CREATE INDEX '%s_%s' ON '%s' ('%s' %s)"
+                                % (
+                                    table_name,
+                                    column_name,
+                                    table_name,
+                                    column_name,
+                                    index_options,
+                                )
+                            )
+                conn.commit()
+                cur.execute("BEGIN TRANSACTION")
+
+            
+                # store the mapping column_name -> df no
+                cur.execute(
+                    """CREATE TABLE column_to_df (
+                            column_name VARCHAR,
+                            df_no integer,
+                            overall_column_pos integer
+                )"""
+                )
+                d = []
+                col_list = list(df.columns)
+                for column_name, df_no in column_to_df_no.items():
+                    d.append((column_name, df_no, col_list.index(column_name)))
+                cur.executemany(
+                    "INSERT into column_to_df (column_name, df_no, overall_column_pos) values (?, ?, ?)",
+                    d,
+                )
+
+                # now store the column_properties
+
+                cur.execute(
+                    """CREATE TABLE column_properties (
+                            column_name VARCHAR,
+                            property_name VARCHAR,
+                            value VARCHAR
+                )"""
+                )
+                # for (col, properties) in column_properties.items():
+                # for prop_name, prop_value in properties.items():
+                # cur.execute(
+                # "INSERT into column_properties VALUES (?, ?, ?)",
+                # (col, prop_name, prop_value),
+                # )
+                conn.commit()
+
+                valid_types = (
+                    1,  # sign, up=1, down=-1, both=0
+                    2,  # abs(value) >= x
+                    3,  # filter to text value
+                    4,  # minimum(columns) >= x
+                    5,  # x <= value
+                )
+                conn.text_factory = str
+                cur = conn.cursor()
+                cur.execute("BEGIN TRANSACTION")
+                cur.execute("DROP TABLE IF EXISTS subsets")
+                cur.execute(
+                    """CREATE TABLE subsets (subset_name text, sheet_name text,  included_vector blob)"""
+                )
+                cur.execute("DROP TABLE IF EXISTS subset_filter_columns")
+                cur.execute(
+                    """CREATE TABLE subset_filter_columns (subset_name text, column_desc text, column_name text, filter_type int, filter_default_value text )"""
+                )
+                cur.execute("DROP TABLE IF EXISTS subset_relevant_columns")
+                cur.execute(
+                    """CREATE TABLE subset_relevant_columns (subset_name text, column_name text)"""
+                )
+                stable_id_to_no = {}
+                for ii, stable_id in enumerate(
+                    sorted(genes.df["gene_stable_id"])
+                ):  # the vectors are defined as to be on the sorted list of genes
+                    stable_id_to_no[stable_id] = ii
+
+                for entry in self.genes_to_dump[genome]:
+                    entry_vector = np.zeros((len(genes.df)), dtype=bool)
+                    for stable_id in entry.df["gene_stable_id"]:
+                        entry_vector[stable_id_to_no[stable_id]] = 1
+
+                    ba = bitarray.bitarray()
+                    ba.extend(entry_vector)
+                    vector_string = (
+                        b"B" + struct.pack(b"I", len(entry_vector)) + ba.tobytes()
+                    )  # vector_string = unicode("".join(['1' if x else '0' for x in entry_vector]))
+                    # if len(vector_string) - 1!= len(self.master_genes.df):
+                    # print len(vector_string), len(self.master_genes.df)
+                    # raise ValueError("Entry vector length unequal gene list length")
+
+                    cur.execute(
+                        "INSERT into subsets (subset_name, sheet_name, included_vector) VALUES (?, ?, ?)",
+                        (
+                            entry.name,
+                            entry.sheet_name if entry.sheet_name else "default",
+                            memoryview(vector_string),
+                        ),
+                    )
+                    if hasattr(entry, "further_filter_columns"):
+                        for (
+                            column_desc,
+                            column_name,
+                            column_type,
+                            default_value,
+                        ) in entry.further_filter_columns:
+                            if not column_type in valid_types:
+                                raise ValueError("Invalid column type: %s" % column_type)
+                            cur.execute(
+                                "INSERT into subset_filter_columns VALUES (?, ?, ?, ?, ?)",
+                                (
+                                    entry.name,
+                                    column_desc,
+                                    column_name,
+                                    column_type,
+                                    default_value,
+                                ),
+                            )
+                    if hasattr(entry, "subset_relevant_columns"):
+                        cur.executemany(
+                            "INSERT into subset_relevant_columns VALUES (?,?)",
+                            (
+                                [
+                                    (entry.name, column_name)
+                                    for column_name in entry.subset_relevant_columns
+                                ]
+                            ),
+                        )
+                conn.commit()
+
+        return ppg.FileGeneratingJob(output_filename, write).depends_on(
+            genes.annotate(),
+            [x.load() for x in self.genes_to_dump[genome]]
+        )
 
 
 def get_md5(input_name, input_job):
