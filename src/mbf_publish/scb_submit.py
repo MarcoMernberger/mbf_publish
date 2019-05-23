@@ -47,8 +47,13 @@ def _register_with_server(accepted_server, path, revision):
     else:
         top_level_url = accepted_server
     url = accepted_server + "/register/%s?revision=%s" % (path, revision)
+    print(url)
     req = requests.get(url, auth=auth)
-    print("registered")
+    if req.status_code == 200:
+        print("registered")
+    else:
+        print("error registring")
+        print(req.text)
 
 
 def get_vid_info(vid):

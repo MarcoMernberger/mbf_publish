@@ -208,6 +208,7 @@ class SCBSubmission:
                     self.genes_to_dump[entry.genome] = []
                 self.genes_to_dump[entry.genome].append(entry)
                 vids = flatten_vid(entry.vid, entry, self.errors)
+                self.vids.append(vids)
 
                 def calc_md5():
                     entry_vector = np.zeros(
