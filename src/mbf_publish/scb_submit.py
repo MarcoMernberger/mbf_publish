@@ -56,16 +56,6 @@ def _register_with_server(accepted_server, path, revision):
         print(req.text)
 
 
-def get_vid_info(vid):
-    import requests
-
-    url = "http://imt.flofloflo.de/scb/vid_info/%s" % vid
-    auth = requests.HTTPBasicAuth(
-        os.environ("MBF_AUTH_USER"), os.environ("MBF_AUTH_PASSWORD")
-    )
-    return requests.get(url).text
-
-
 accepted_servers = {
     "scb": "http://mbf.imt.uni-marburg.de/scb",
     "scb_dev": "http://mbf.imt.uni-marburg.de/scb_dev",
