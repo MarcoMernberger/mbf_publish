@@ -10,7 +10,7 @@ import json
 import hashlib
 
 
-def prep_scb(*objects_to_push):
+def prep_scb(*objects_to_push, top_level_genes=None):
     """Main entry point to publish data to our scb system
     """
     objs = []
@@ -23,12 +23,12 @@ def prep_scb(*objects_to_push):
             print(x)
             print(dir(x))
             raise ValueError()
-    submission = SCBSubmission(objs)
+    submission = SCBSubmission(objs, top_level_genes)
     return submission.dump_meta_data()
 
 
 class SCBSubmission:
-    def __init__(self, objs):
+    def __init__(self, objs, top_level_genes=None):
         self.output_path = Path("web/scb")
         self.output_path.mkdir(exist_ok=True, parents=True)
         self.objs = objs
@@ -38,12 +38,18 @@ class SCBSubmission:
         self.deps = []
         self.errors = []
         self.vids = []
+        self.master_gene_list_by_genome = {}
+        if top_level_genes:
+            self.genes = top_level_genes
+        else:
+            self.genes = {}
 
         self.genes_to_dump = {}
         self.extract_genomes()
         self.extract_lanes()
         self.extract_genomic_regions()
         self.extract_genes()
+        self.extract_tpm_annos()
         if len(self.used) != len(self.objs):
             missing = set(self.objs) - self.used
             raise ValueError("unused objects", missing)
@@ -163,6 +169,52 @@ class SCBSubmission:
                 self.deps.append(md5[0])
                 self.register_used(entry)
 
+    def extract_tpm_annos(self):
+        self.meta_data["tag_count_annos"] = []
+        for entry in self.objs:
+            if entry.__class__.__name__ == "NormalizationTPM":
+                vids = flatten_vid(entry.vid, entry, self.errors)
+                self.vids.append(vids)
+
+                def calc_md5(entry=entry):
+                    genes = self.get_genes(entry.genome)
+                    return hashlib.md5(
+                        ("".join([str(x) for x in genes.df[entry.columns[0]]])).encode(
+                            "utf-8"
+                        )
+                    ).hexdigest()
+
+                job_table = self.write_gene_sql(entry.genome)
+                fn_table = Path(job_table.filenames[0])
+
+                self.meta_data["tag_count_annos"].append(
+                    {
+                        "vids": vids,
+                        "displayname": get_scb_name(
+                            entry
+                        ),  # currently, these are not being shown in the SCB, we use the sample info instead...
+                        "column_name": entry.columns[0],
+                        "md5": calc_md5,
+                        "table_path": str(fn_table.absolute().relative_to("/project")),
+                        "scb_comment": getattr(entry, "scb_comment", ""),
+                        "kind": "TPM",
+                        "id": getattr(
+                            entry, "scb_id", None
+                        ),  # this allows you to permanently tie it to an entry in SCBs databases
+                        "genome_label": extract_genome_label(entry),
+                    }
+                )
+                genes = self.get_genes(entry.genome)
+                if not genes.has_annotator(entry):
+                    raise ValueError(
+                        f"Genes object {genes.name} did not have annotator {entry.columns[0]}."
+                        "\nprep_scb won't add it!"
+                        "\nPerhaps you need to pass in prep_scb(..., top_level_genes={genome: genes}) to use?"
+                        "\n(e.g. if you have added tpm annos just to protein_coding genes)"
+                    )
+                self.deps.append(genes.add_annotator(entry))
+                self.register_used(entry)
+
     def extract_genomic_regions(self):
         self.meta_data["genomic_regions"] = []
         for entry in self.objs:
@@ -210,18 +262,13 @@ class SCBSubmission:
                 vids = flatten_vid(entry.vid, entry, self.errors)
                 self.vids.append(vids)
 
-                def calc_md5():
-                    entry_vector = np.zeros(
-                        (len(self.get_genes(entry.genome).df)), dtype=bool
-                    )
-                    for kept in entry.df["parent_row"]:
-                        entry_vector[kept] = 1
-                    md5_value = hashlib.md5(
-                        ("".join(["1" if x else "0" for x in entry_vector])).encode(
-                            "utf-8"
-                        )
-                    ).hexdigest()
-                    return md5_value
+                def calc_md5(entry=entry):
+                    # parent row is the row(=index) in the very top level parent!
+                    # but we need a bool vector wheter it's
+                    h = hashlib.md5()
+                    for stable_id in sorted(entry.df.gene_stable_id):
+                        h.update(stable_id.encode('utf-8'))
+                    return h.hexdigest()
 
                 scb_comment = getattr(entry, "scb_comment", "")
                 if scb_comment is None:
@@ -236,9 +283,9 @@ class SCBSubmission:
                         "dbname": entry.name,
                         "md5": calc_md5,
                         "scb_comment": scb_comment,
-                        "id": entry.scb_id
-                        if hasattr(entry, "scb_id")
-                        else None,  # this allows you to permanently tie it to an entry in SCBs databases
+                        "id": getattr(
+                            entry, "scb_id", None
+                        ),  # this allows you to permanently tie it to an entry in SCBs databases
                         "table_path": str(fn_table.absolute().relative_to("/project")),
                         "genome_label": extract_genome_label(entry),
                     }
@@ -254,9 +301,12 @@ class SCBSubmission:
         self.used.add(entry)
 
     def get_genes(self, genome):
-        import mbf_genomics
 
-        return mbf_genomics.genes.Genes(genome)
+        if not genome in self.genes:
+            import mbf_genomics
+
+            self.genes[genome] = mbf_genomics.genes.Genes(genome)
+        return self.genes[genome]
 
     def write_gene_sql(self, genome):
         import sqlite3
@@ -278,7 +328,7 @@ class SCBSubmission:
                 if df[col].dtype == "object" or col in ["chr", "biotype"]:
                     print("fixing", col)
                     df = df.assign(**{col: [str(x) for x in df[col].values]})
-            df = df.rename(columns={'gene_stable_id': 'stable_id'})
+            df = df.rename(columns={"gene_stable_id": "stable_id"})
             print(df.columns)
 
             index_columns = ["stable_id"]
@@ -296,7 +346,7 @@ class SCBSubmission:
                     if c not in index_columns:
                         column_to_df_no[c] = ii
             if Path(output_filename).exists():
-                print('unlinking', output_filename)
+                print("unlinking", output_filename)
                 Path(output_filename).unlink()
             with sqlite3.connect(output_filename, isolation_level="DEFERRED") as conn:
                 cur = conn.cursor()
@@ -335,7 +385,6 @@ class SCBSubmission:
                 conn.commit()
                 cur.execute("BEGIN TRANSACTION")
 
-            
                 # store the mapping column_name -> df no
                 cur.execute(
                     """CREATE TABLE column_to_df (
@@ -428,7 +477,9 @@ class SCBSubmission:
                             default_value,
                         ) in entry.further_filter_columns:
                             if not column_type in valid_types:
-                                raise ValueError("Invalid column type: %s" % column_type)
+                                raise ValueError(
+                                    "Invalid column type: %s" % column_type
+                                )
                             cur.execute(
                                 "INSERT into subset_filter_columns VALUES (?, ?, ?, ?, ?)",
                                 (
@@ -452,8 +503,7 @@ class SCBSubmission:
                 conn.commit()
 
         return ppg.FileGeneratingJob(output_filename, write).depends_on(
-            genes.annotate(),
-            [x.load() for x in self.genes_to_dump[genome]]
+            genes.annotate(), [x.load() for x in self.genes_to_dump[genome]]
         )
 
 
@@ -498,6 +548,8 @@ def get_scb_name(obj):
         return obj.scb_name
     elif hasattr(obj, "sheet_name") and obj.sheet_name:
         return obj.sheet_name + "/" + obj.name
+    elif hasattr(obj, "plot_name") and obj.plot_name:
+        return obj.plot_name
     else:
         return obj.name
 
