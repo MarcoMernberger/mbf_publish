@@ -8,7 +8,8 @@ import json
 from collections import OrderedDict, namedtuple
 import tabulate
 
-SampleInfo = namedtuple("SampleInfo", ['name','fastqs','vid'])
+SampleInfo = namedtuple("SampleInfo", ["name", "fastqs", "vid"])
+
 
 def map_samples(
     sample_paths,
@@ -20,7 +21,7 @@ def map_samples(
     """(interactively) map fastq.gz samples and vids from the scb.
     Once it's done, return a dictionary:
     {sample_name -> {
-        'vid': 'XYZ000', 
+        'vid': 'XYZ000',
         'fastqs': [path, path, path...],
         'display_name': 'sample_name'
     }
@@ -33,8 +34,8 @@ def map_samples(
     you can add as a set in @expect_vids_missing,
     and they're filtered from the scb response
 
-    If you have discoverable fastqs that you want to ignore, 
-    pass their 'names' (ie. the part before _S\d+_L\d+) 
+    If you have discoverable fastqs that you want to ignore,
+    pass their 'names' (ie. the part before _S\\d+_L\\d+)
     in @filter_fastqs.
     """
     sample_paths = [Path(x) for x in sample_paths]
@@ -74,11 +75,10 @@ def map_samples(
             mapping_filename,
             default_hide,
         )
-    return [SampleInfo(
-        name=v['display_name'], 
-        vid=v['vid'],
-        fastqs=fastq_samples[k]) for (k,v) in result.items()
-        ]
+    return [
+        SampleInfo(name=v["display_name"], vid=v["vid"], fastqs=fastq_samples[k])
+        for (k, v) in result.items()
+    ]
 
 
 def existing_mapping_complete(existing_mapping, fastq_samples, print_errors=False):
@@ -108,7 +108,7 @@ def existing_mapping_complete(existing_mapping, fastq_samples, print_errors=Fals
 
 
 def discover_fastq_samples(sample_paths):
-    """Discover fastq.gz files. Assume that anything before _S\d+_L\d+_ is the sample name"""
+    r"""Discover fastq.gz files. Assume that anything before _S\d+_L\d+_ is the sample name"""
     by_key = {}
     for p in sample_paths:
         for candidate in p.glob("**/*.fastq.gz"):
@@ -172,10 +172,9 @@ def fetch_vid_info(scb_project_ids):
     return result
 
 
-def map_interactive(
+def map_interactive(  # noqa:C901
     existing_mapping, fastq_samples, vid_information, mapping_filename, default_hide
 ):
-    first = True
     show_fastqs = not default_hide
     show_vids = not default_hide
 

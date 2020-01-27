@@ -2,10 +2,8 @@ from pathlib import Path
 import bitarray
 import struct
 import numpy as np
-import pandas as pd
 import pypipegraph as ppg
 from mbf_externals.util import write_md5_sum
-import pickle
 import json
 import hashlib
 
@@ -308,7 +306,7 @@ class SCBSubmission:
             self.genes[genome] = mbf_genomics.genes.Genes(genome)
         return self.genes[genome]
 
-    def write_gene_sql(self, genome):
+    def write_gene_sql(self, genome):  # noqa:C901
         import sqlite3
 
         genes = self.get_genes(genome)

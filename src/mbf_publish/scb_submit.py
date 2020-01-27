@@ -1,11 +1,12 @@
 #!/usr/bin/python3
 import sys
 import os
-import pickle
 import subprocess
 import json
 
-###This is the register with website code"""
+# This is the register with website code"""
+
+
 def load_meta_data():
     try:
         with open("web/scb/metadata.json") as op:
@@ -19,8 +20,8 @@ def load_meta_data():
 def _rsync_to_server(project_name):
     cmd = [
         "sudo",
-        #'-u',
-        #'ffs',
+        # '-u',
+        # 'ffs',
         "rsync",
         os.path.abspath(".") + "/",
         "ffs@mbf.imt.uni-marburg.de:/mf/scb/%s/@chmod_after@chmod=o+rwX,g+rwX@chown=1000:2000"
@@ -46,7 +47,7 @@ def _register_with_server(accepted_server, path, revision):
         top_level_url = os.environ["scb_server"]
     else:
         top_level_url = accepted_server
-    url = accepted_server + "/register/%s?revision=%s" % (path, revision)
+    url = top_level_url + "/register/%s?revision=%s" % (path, revision)
     print(url)
     req = requests.get(url, auth=auth)
     if req.status_code == 200:
