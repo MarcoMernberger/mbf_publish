@@ -24,7 +24,7 @@ def _rsync_to_server(project_name):
         # 'ffs',
         "rsync",
         os.path.abspath(".") + "/",
-        "ffs@mbf.imt.uni-marburg.de:/mf/scb/%s/@chmod_after@chmod=o+rwX,g+rwX@chown=1000:2000"
+        "ffs@mbf.imt.uni-marburg.de:/mf/scb/%s/@@@chmod_after@@@chmod=o+rwX,g+rwX@@@chown=1000:2000"
         % (project_name),
         "--files-from=web/scb/rsync_list.txt",
         "-e",
